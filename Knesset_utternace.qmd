@@ -1,0 +1,329 @@
+---
+title: "israel_tweets"
+format: html
+editor: visual
+---
+
+1.  **Open Questions**:
+
+-   A speaker cannot have more than one speech in a session-topic pair, correct?
+
+-   Do Shaul / Gu have a their own method of identifying speeches?
+
+2.  **Suggestions for the future:**
+
+-   measure interruptions as a proxy for a toxic tone?
+
+3.  **Robustness checks- identifying speeches:**
+
+-   Procedure was check on the following [sessions](https://main.knesset.gov.il/activity/plenum/pages/sessions.aspx):
+
+1.  Knesset 24 session 155: No issues detected.
+2.  Knesset 24 session 136:
+    1.  Omit when person_id is NA.
+    2.  Omit speeches in *sign languages* (p.71).
+    3.  Identify speeches that are not on the agenda (Gabi Lasko page 62), or that aren't in the same order as the agenda (PM was absent when called and then appeared).
+3.  Knesset 23 session 135:
+    1.  A response to a speech accidentally identify the middle speech as 'sandwich' (P.13)-\> response: a condition for identifying 'sandwiches' is that the middle utterance, as well as the one before and after won't be chairs.
+
+# Setup
+
+## Libraries
+
+```{r libraries, message=FALSE}
+library(readr)
+library(tidyverse)
+library(progress)
+library(stringi)
+```
+
+## Data
+
+-   Derived from [here](https://github.com/guymorlan/israparltweet?tab=readme-ov-file): Guy Mor-Lan, Effi Levi, Tamir Sheafer, Shaul R. Shenhav. *LREC-COLING 2024*.
+
+```{r import_data}
+
+# Metadata
+metadata<-read_csv("metadata.csv")
+
+# Knesset speaches
+knesset_speaches<-read_csv("../knesset_speeches.csv")
+
+knesset_sample <- knesset_speaches %>%
+  filter(session_number==135 & knesset==23)
+```
+
+-   Create protocol identifier and utterances inner index
+
+```{r create_index}
+# Create a new variable combining session_number and knesset
+knesset_sample <- knesset_sample %>%
+  mutate(pair_identifier = paste(knesset, session_number, sep = "_"))
+
+# Add a sequential index within each pair_identifier
+knesset_sample <- knesset_sample %>%
+  group_by(pair_identifier) %>%
+  mutate(inner_index = row_number()) %>%
+  ungroup()
+```
+
+## Pre-processing
+
+-   Remove the following characters:
+
+    -   Text within parentheses along with the parentheses.
+
+    -   All types of dashes ('-').
+
+```{r remove_text}
+
+# Create a function to calculate the number of words in each chunk
+remove_characters <- function(text) {
+  # Remove text within parentheses along with the parentheses
+  text <- gsub("\\s*\\([^\\)]*\\)", "", text)
+  
+  # Remove all types of dashes and surrounding white spaces
+  text <- gsub("\\s*[-–—]\\s*", " ", text)  # Matches -, –, or —
+  
+  # Remove any extra white spaces created
+  text <- gsub("\\s+", " ", text)
+  
+  # Trim leading and trailing white spaces
+  text <- trimws(text)
+  
+  return(text)
+}
+
+# Apply the function to the 'text_clean' variable
+knesset_sample <- knesset_sample %>%
+  mutate(text_clean = remove_characters(text))
+```
+
+-   Remove chairs (Indicator for whether or not the speaker was the chair *of the session*)
+
+-   Remove utterances that are part of a Questions and Answers session.
+
+```{r remove_chairs_qa}
+knesset_sample <- knesset_sample %>%
+  filter(is.na(qa))%>%
+  filter(!is.na(person_id))
+```
+
+-   Remove utterances smaller than 15 tokens
+
+```{r remove_small_utter}
+
+ # First calculate the number of words in each utternace. 
+
+calculate_word_count <- function(df, column_name) {
+  pb <- progress_bar$new(
+    format = "  Calculating word count [:bar] :percent in :elapsed",
+    total = nrow(df),
+    clear = FALSE,
+    width = 60
+  )
+  
+  # Loop over rows and calculate word count with progress bar
+  df <- df %>%
+    rowwise() %>%
+    mutate(word_count = {
+      pb$tick()  # Update the progress bar
+      str_count(!!sym(column_name), "\\S+") # count the number of non-whitespace sequences (i.e., "words") in a column 
+    }) %>%
+    ungroup()
+  
+  return(df)
+}
+
+# Calculate word count for each article
+knesset_sample <- calculate_word_count(knesset_sample,"text_clean")
+
+knesset_sample<-knesset_sample %>%
+  filter(word_count>15)
+```
+
+-   Remove intermediate utterances
+
+```{r remove_intermediates}
+
+# Identify "sandwich" speakers with strict inner_index conditions
+knesset_sample <- knesset_sample %>%
+  group_by(pair_identifier, topic) %>%  # Group by pair_identifier and topic
+  mutate(
+    is_sandwich = case_when(
+      lag(person_id) == lead(person_id) &                  # The one before and after are the same
+      lag(chair) == FALSE & lead(chair) == FALSE & chair==FALSE &        # Neither the one before nor after is the chair
+      lag(person_id) != person_id &                        # The middle one is different from the one before
+      lead(person_id) != person_id ~ TRUE,                 # The middle one is different from the one after
+      TRUE ~ FALSE                                         # Otherwise, not a sandwich
+    )
+  ) %>%
+  ungroup()
+
+
+knesset_sample <- knesset_sample %>%
+  filter(is_sandwich==F)
+
+knesset_sample <- knesset_sample %>%
+  filter(chair==F)%>%
+  filter(is.na(qa))%>%
+  filter(!is.na(person_id))
+```
+
+-   Combined speeches
+
+```{r combined_speeches}
+
+# Add a temporary column to store the original order
+merged_knesset <- knesset_sample %>%
+  mutate(original_order = row_number()) %>% # Add original order column
+  group_by(pair_identifier, person_id,topic) %>%
+  summarise(
+    text_clean = paste(text_clean, collapse = " "), 
+    original_order = min(original_order), # Use the minimum original order to keep one representative row
+    .groups = "drop"
+  ) %>%
+  arrange(original_order) %>% # Arrange by the original order
+  select(-original_order) # Remove the temporary column
+
+
+ knesset_meta <- knesset_sample %>%
+  select(person_id,knesset, session_number, pair_identifier, name, date,topic)%>%
+  distinct()
+
+merged_knesset <- merged_knesset %>%
+  left_join(knesset_meta, by=c("person_id"="person_id", "pair_identifier"="pair_identifier", "topic"="topic"))
+
+# Add an index column based on row numbers
+merged_knesset <- merged_knesset %>%
+  mutate(index = row_number()) %>%
+  relocate(index)
+```
+
+-   Split to chunks of 250 tokens
+
+```{r fun_chunk}
+
+# Clean text function to preprocess the content
+clean_text <- function(text) {
+  # Ensure the text is in a standard encoding (UTF-8)
+  text <- iconv(text, to = "UTF-8", sub = "")
+  
+  # Replace any kind of whitespace (tabs, newlines, multiple spaces) with a single space
+  text <- gsub("[ \t\n\r]+", " ", text)  # This covers all typical whitespace
+  
+  # Trim leading and trailing spaces
+  text <- trimws(text)
+  
+  return(text)
+}
+
+# Split content optimized function
+split_content_optimized <- function(index, text_clean, word_limit = 250) {
+  # Split the content into words based on non-whitespace sequences (words)
+  words <- str_extract_all(text_clean, "\\S+")[[1]]  # Extract all sequences of non-whitespace characters
+  num_words <- length(words)
+  
+  # Pre-allocate list to store chunks
+  estimated_chunks <- ceiling(num_words / word_limit)
+  chunks <- vector("list", estimated_chunks)
+  
+  chunk_counter <- 1
+  start_idx <- 1
+  
+  while (start_idx <= num_words) {
+    end_idx <- min(start_idx + word_limit - 1, num_words)
+    
+    # Look ahead for nearest full stop or question mark followed by a capital letter
+    found_marker <- FALSE
+    if (end_idx < num_words) {
+      for (i in end_idx:(min(end_idx + word_limit - 1, num_words - 1))) {
+        if (grepl("[\\.\\?]", words[i]) && grepl("^[A-Z]", words[i + 1])) {
+          end_idx <- i
+          found_marker <- TRUE
+          break
+        }
+      }
+    }
+    
+    # If no valid marker is found, use the initial end_idx based on word limit
+    if (!found_marker) {
+      end_idx <- min(start_idx + word_limit - 1, num_words)
+    }
+    
+    # Create the chunk
+    chunk_words <- words[start_idx:end_idx]
+    chunk_text <- paste(chunk_words, collapse = " ")
+    chunks[[chunk_counter]] <- chunk_text
+    
+    # Move to the next chunk
+    start_idx <- end_idx + 1
+    chunk_counter <- chunk_counter + 1
+  }
+  
+  # Trim the list to the actual number of chunks
+  chunks <- chunks[1:(chunk_counter - 1)]
+  
+  # Merge the last chunk with the previous one if it's smaller than 125 words
+  if (length(chunks) > 1 && stri_count_words(chunks[[length(chunks)]]) < 125) {
+    chunks[[length(chunks) - 1]] <- stringi::stri_join(chunks[[length(chunks) - 1]], chunks[[length(chunks)]], collapse = " ")
+    chunks <- chunks[-length(chunks)]
+  }
+  
+  # Create a dataframe for the chunks
+  df <- data.frame(
+    index = rep(index, length(chunks)),
+    chunk_id = seq_along(chunks),
+    chunk_text = unlist(chunks),
+    stringsAsFactors = FALSE
+  )
+  
+  return(df)
+}
+
+# Function to process the knesset_sample dataframe
+process_knesset_sample <- function(df, word_limit = 250) {
+  all_chunks <- list()  # Initialize list to store chunks
+  
+  # Clean the content and process each article
+  df$text_clean <- sapply(df$text_clean, clean_text)
+  
+  # Loop over each article
+  for (i in seq_len(nrow(df))) {
+    # Print progress message every 1000 articles processed
+    if (i %% 1000 == 0) {
+      message(paste("Processing article", i, "of", nrow(df)))
+    }
+    
+    # Split the article content into chunks and store them
+    all_chunks[[i]] <- split_content_optimized(df$index[i], df$text_clean[i], word_limit)
+  }
+  
+  # Combine all the chunked dataframes into one
+  final_df <- bind_rows(all_chunks)
+  
+  return(final_df)
+}
+```
+
+```{r split_chunks}
+
+# Calculate word count for each chunk
+chunk_knesset <- process_knesset_sample(merged_knesset)
+
+chunk_knesset <- chunk_knesset %>%
+  left_join(merged_knesset, by="index")
+
+chunk_knesset <- calculate_word_count(chunk_knesset,"chunk_text")
+
+hist(chunk_knesset$word_count)
+summary(chunk_knesset$word_count)
+
+
+```
+
+## Analysis
+
+-   Run on 10 years on Likud vs. Havoda speeches/ on quarterly basis (party_name)
+
+-   Likud vs. Avoda
