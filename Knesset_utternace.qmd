@@ -20,11 +20,39 @@ editor: visual
 
 1.  Knesset 24 session 155: No issues detected.
 2.  Knesset 24 session 136:
-    1.  Omit when person_id is NA.
-    2.  Omit speeches in *sign languages* (p.71).
-    3.  Identify speeches that are not on the agenda (Gabi Lasko page 62), or that aren't in the same order as the agenda (PM was absent when called and then appeared).
+    -   Omit when person_id is NA.
+
+    -   Omit speeches in *sign languages* (p.71).
+
+    -   Identify speeches that are not on the agenda (Gabi Lasko page 62), or that aren't in the same order as the agenda (PM was absent when called and then appeared).
 3.  Knesset 23 session 135:
-    1.  A response to a speech accidentally identify the middle speech as 'sandwich' (P.13)-\> response: a condition for identifying 'sandwiches' is that the middle utterance, as well as the one before and after won't be chairs.
+    -   A response to a speech accidentally identify the middle speech as 'sandwich' (P.13): response-\> modify the condition for identifying 'sandwiches' in a way that the middle utterance, as well as the one before and after won't be chairs.
+4.  Knesset 21 session 8
+    -   Short utterances (less than 15 words) omitted even though they were said by the main speaker (p.27).
+
+5. Knesset 19 session 193:
+
+-   Undetected utterances as sandwiches (p.39 & p. 45-46. Rosin & Michaeli). solution-\> change thrshold to 20.
+
+6 . Knesset 20 session 387:
+
+-   No issues detected.
+
+    7.  Knesset 19 session 192.
+
+    -   22 words utternace was not omitted.
+
+8.  Knesset 18 session 385.
+
+-    No issues detected.
+
+9.  Knesset 17 session 258.
+    -   Issue: false identified as sandwich.
+
+    -   Solution: first identify sandwiches-\> then omit small utternaces (risk: might omit small utternaces which are part of someone's speech.). On the other hand- better identfiiation of sandwiches.
+
+        10. Seccion 268 Knesset: 17.
+            -   no issue detected.
 
 # Setup
 
@@ -42,18 +70,21 @@ library(stringi)
 -   Derived from [here](https://github.com/guymorlan/israparltweet?tab=readme-ov-file): Guy Mor-Lan, Effi Levi, Tamir Sheafer, Shaul R. Shenhav. *LREC-COLING 2024*.
 
 ```{r import_data}
-
 # Metadata
 metadata<-read_csv("metadata.csv")
 
 # Knesset speaches
 knesset_speaches<-read_csv("../knesset_speeches.csv")
-
-knesset_sample <- knesset_speaches %>%
-  filter(session_number==135 & knesset==23)
 ```
 
--   Create protocol identifier and utterances inner index
+Retrieve a sample
+
+```{r identify_}
+knesset_sample <- knesset_speaches %>%
+  filter(session_number==155 & knesset==24)
+```
+
+Create protocol identifier and utterances inner index
 
 ```{r create_index}
 # Create a new variable combining session_number and knesset
@@ -65,6 +96,34 @@ knesset_sample <- knesset_sample %>%
   group_by(pair_identifier) %>%
   mutate(inner_index = row_number()) %>%
   ungroup()
+```
+
+Identify inter-mediates utterances
+
+```{r remove_intermediates}
+# Identify "sandwich" speakers with strict inner_index conditions
+knesset_sample <- knesset_sample %>%
+  group_by(pair_identifier, topic) %>%  # Group by pair_identifier and topic
+  mutate(
+    is_sandwich = case_when(
+      lag(person_id) == lead(person_id) &                  # The one before and after are the same
+      lag(chair) == FALSE & lead(chair) == FALSE & chair==FALSE &        # Neither the one before nor after is the chair
+      lag(person_id) != person_id &                        # The middle one is different from the one before
+      lead(person_id) != person_id ~ TRUE,                 # The middle one is different from the one after
+      TRUE ~ FALSE                                         # Otherwise, not a sandwich
+    )
+  ) %>%
+  ungroup()
+```
+
+```{r}
+knesset_sample <- knesset_sample %>%
+  filter(is_sandwich==F)
+
+knesset_sample <- knesset_sample %>%
+  filter(chair==F)%>%
+  filter(is.na(qa))%>%
+  filter(!is.na(person_id))
 ```
 
 ## Pre-processing
@@ -103,11 +162,7 @@ knesset_sample <- knesset_sample %>%
 
 -   Remove utterances that are part of a Questions and Answers session.
 
-```{r remove_chairs_qa}
-knesset_sample <- knesset_sample %>%
-  filter(is.na(qa))%>%
-  filter(!is.na(person_id))
-```
+<!-- -->
 
 -   Remove utterances smaller than 15 tokens
 
@@ -139,36 +194,12 @@ calculate_word_count <- function(df, column_name) {
 knesset_sample <- calculate_word_count(knesset_sample,"text_clean")
 
 knesset_sample<-knesset_sample %>%
-  filter(word_count>15)
+  filter(word_count>20)
 ```
 
 -   Remove intermediate utterances
 
-```{r remove_intermediates}
-
-# Identify "sandwich" speakers with strict inner_index conditions
-knesset_sample <- knesset_sample %>%
-  group_by(pair_identifier, topic) %>%  # Group by pair_identifier and topic
-  mutate(
-    is_sandwich = case_when(
-      lag(person_id) == lead(person_id) &                  # The one before and after are the same
-      lag(chair) == FALSE & lead(chair) == FALSE & chair==FALSE &        # Neither the one before nor after is the chair
-      lag(person_id) != person_id &                        # The middle one is different from the one before
-      lead(person_id) != person_id ~ TRUE,                 # The middle one is different from the one after
-      TRUE ~ FALSE                                         # Otherwise, not a sandwich
-    )
-  ) %>%
-  ungroup()
-
-
-knesset_sample <- knesset_sample %>%
-  filter(is_sandwich==F)
-
-knesset_sample <- knesset_sample %>%
-  filter(chair==F)%>%
-  filter(is.na(qa))%>%
-  filter(!is.na(person_id))
-```
+<!-- -->
 
 -   Combined speeches
 
